@@ -1,0 +1,580 @@
+#! usr/bin/sh
+
+################################################################################
+############################### INTRODUCCIÓN ###################################
+
+# Este script recoge el procedimiento seguido para realizar la medición
+# de los parámetros de "delay", "jitter" y "throughput" 
+# teniendo en cuenta los siguientes factores:
+
+# 1: Hora
+# 2: Día
+# 3: Servidores web destino ("gettec.es", "aipg-tx.org", "bmgs.com.au") 
+# 			     Europa        EEUU           Australia
+# OJO: EL FACTOR 3 NO SE USA PARA MEDIR EL THROUGHPUT.
+
+# 4: Conexiones VPN (sin conexión, desde la wifi de casa; 
+# conectado a la VPN con localización en USA-Denver, ALIAS: usde; 
+# conectado a la VPN con localización en Australia-Sydney - 1, ALIAS: ausy.
+
+# El Script realizará medidas de cada una de las métricas. Para cada 
+# configuración de factores, guardará la medida en una nueva posición 
+# de un documento .csv. También guardará la localización de la IP
+# con el fin de comprobar posteriormente que la IP del servidor no ha cambiado
+# de localización. 
+# Se guardan también las coordenadas porque puede ser interesante observar 
+# la potencia de ipinfo, ya que si metemos las coordenadas en google earth...
+
+################################################################################
+############################### FLUJO DE MEDIDA ################################
+
+# EL flujo de medida consistirá en primer lugar en una inicialización de las IPs, 
+# localizaciones de las mismas y fecha y hora.
+# EN segundo lugar, se realizará la toma de medidas para el caso de NO conexión VPN
+# En tercer lugar, se realizará la toma de medidas para VPN en USA
+# En cuarto lugar, se realizará la toma de medidas para VPN en Australia
+
+# Para cada medida de retardo y delay, se aleatorizarán el orden de los servidores 
+# a los que se hace ping para evitar posibles correlaciones entre medidas consecutivas
+# al mismo servidor. POdría darse el caso de que 20 medidas de ping consecutivas
+# al mismo servidor afecte a la red (aunque seguramente no) de manera fija.
+# Para ello, se ha creado un archivo que contiene 60 filas. Cada una de estas filas
+# contiene el nombre de dominio de uno de los 3 servidores a considerar, y el orden
+# de ocurrencia de éstos es aleatorio. Además, se ha asegurado que cada uno de los 
+# servidores aparezca 20 veces en el fichero.
+
+################################################################################
+########################### INICIALIZACIÓN PREVIA ##############################
+
+# Esta inicialización previa es crucial para mantener un registro de la fecha y hora
+# IPs y localización de las mismas que se han medido.
+# Esta primera fase es esencial para asociar las IPs con los servidores web
+# ya que no sabemos si tienen asignadas IPs dinámicas. Puede ser que 
+# de una medida de día u hora a otra, haya cambiado la IP del servidor web.
+
+# Gettec.es:
+IP_gettec=$(nslookup gettec.es | tail -n 2 | head -n 1 | awk '{print $2}')
+Loc_gettec=$(curl ipinfo.io/$IP_gettec?token=c9a954189de353 | head -n 5 | tail -n 1 | awk '{print $2}' | sed 's/"//g' | sed 's/,//g')
+Coor_gettec=$(curl ipinfo.io/$IP_gettec?token=c9a954189de353 | head -n 7 | tail -n 1 | awk '{print $2}' | sed 's/"//g' | sed 's/,/ /g')
+
+# Aipg-tx.org:
+IP_aipg=$(nslookup aipg-tx.org | tail -n 2 | head -n 1 | awk '{print $2}')
+Loc_aipg=$(curl ipinfo.io/$IP_aipg?token=c9a954189de353 | head -n 5 | tail -n 1 | awk '{print $2}' | sed 's/"//g' | sed 's/,//g')
+Coor_aipg=$(curl ipinfo.io/$IP_aipg?token=c9a954189de353 | head -n 7 | tail -n 1 | awk '{print $2}' | sed 's/"//g' | sed 's/,/ /g')
+
+# www.ckcnet.co.jp:
+IP_bmgs=$(nslookup bmgs.com.au | tail -n 2 | head -n 1 | awk '{print $2}')
+Loc_bmgs=$(curl ipinfo.io/$IP_bmgs?token=c9a954189de353 | head -n 5 | tail -n 1 | awk '{print $2 $3 $4}' | sed 's/"//g' | sed 's/,//g')
+Coor_bmgs=$(curl ipinfo.io/$IP_bmgs?token=c9a954189de353 | head -n 7 | tail -n 1 | awk '{print $2}' | sed 's/"//g' | sed 's/,/ /g')
+
+# También se actualizan la hora y el día:
+dia=$(LC_TIME=es_ES.UTF-8 date +%A)
+hora=$(LC_TIME=es_ES.UTF-8 date +%H:%M)
+
+# También se analiza "url" con la URL utilizado para medir el throughput de la red con yt-dlp:
+URL="https://www.youtube.com/watch?v=UEy5IuIrDfg"
+
+# Guardamos en el registro las IPs, junto con sus datos de localización y fecha:
+echo "gettec.es $IP_gettec $Loc_gettec $Coor_gettec $dia $hora" >> Registro_Inicializacion_Medidas.csv
+echo "aipg-tx.org $IP_aipg $Loc_aipg $Coor_aipg $dia $hora" >> Registro_Inicializacion_Medidas.csv
+echo "bmgs.com.au $IP_bmgs $Loc_bmgs $Coor_bmgs $dia $hora" >> Registro_Inicializacion_Medidas.csv
+
+################################################################################
+############################### MEDICIÓN SIN VPN ###############################
+expressvpn autoconnect false
+# PRIMERO SE REALIZAN LAS MEDICIONES DEL DELAY Y  JITTER
+
+# Se realiza primero una medida aleatorizada del ping y jitter alternando entre 
+# los 3 servidores y manteniendo un intervalo de guarda de 10 segundos entre ping
+# realizado.
+
+# La primera medida del ping se hace fuera del bucle que alterna aleatoriamente entre servidores
+touch Gettec_delay.txt
+touch aipg_delay.txt
+touch Bmgs_delay.txt
+touch Gettec_jitter.txt
+touch aipg_jitter.txt
+touch Bmgs_jitter.txt
+ 
+# INtroducimos en el fichero Factores.csv la configuración de factores:
+echo "gettec.es" "NO" $dia $hora >> Factores.csv
+echo "aipg-tx.org" "NO" $dia $hora >> Factores.csv
+echo "bmgs.com.au" "NO" $dia $hora >> Factores.csv
+
+# Enviamos el primer ping al servidor gettec
+gettec_delay_jitter=$(ping -c 10 "$IP_gettec" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+gettec_delay=$(echo "$gettec_delay_jitter" | awk '{print $1}')
+gettec_jitter=$(echo "$gettec_delay_jitter" | awk '{print $2}')
+echo $gettec_delay >> Gettec_delay.txt
+echo $gettec_jitter >> Gettec_jitter.txt
+# Depuración código
+echo "Primer retardo Gettec: $gettec_delay"
+echo "Primer jitter Gettec: $gettec_jitter"
+
+
+
+# Enviamos el primer ping al servidor aipg
+aipg_delay_jitter=$(ping -c 10 "$IP_aipg" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+aipg_delay=$(echo "$aipg_delay_jitter" | awk '{print $1}')
+aipg_jitter=$(echo "$aipg_delay_jitter" | awk '{print $2}')
+echo $aipg_delay >> aipg_delay.txt
+echo $aipg_jitter >> aipg_jitter.txt
+# Depuración código
+echo "Primer retardo aipg: $aipg_delay"
+echo "Primer jitter aipg: $aipg_jitter"
+
+
+
+# Enviamos el primer ping al servidor bmgs
+bmgs_delay_jitter=$(ping -c 10 "$IP_bmgs" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+bmgs_delay=$(echo "$bmgs_delay_jitter" | awk '{print $1}')
+bmgs_jitter=$(echo "$bmgs_delay_jitter" | awk '{print $2}')
+echo $bmgs_delay >> Bmgs_delay.txt
+echo $bmgs_jitter >> Bmgs_jitter.txt
+# Depuración código
+echo "Primer retardo Bmgs: $bmgs_delay"
+echo "Primer jitter Bmgs: $bmgs_jitter"
+
+
+# Como ya hemos realizado una medida de ping para cada servidor, solo nos quedan 57
+# Bucle para leer el fichero "Servidores_ALeatorizados" línea por línea
+
+# || [n "$servidor" ] se pone para que se interprete la última línea aunque esta no tenga salto de línea
+contador=0
+while IFS= read -r servidor || [ -n "$servidor" ]; do
+	contador=$((contador + 1))
+	echo "Iteración $contador"
+	# Operación si el nombre del servidor coincide con "gettec.es"
+	if [ "$servidor" = "gettec.es" ]; then
+		echo "Servidor Gettec"
+		gettec_delay_jitter=$(ping -c 10 "$IP_gettec" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+		gettec_delay=$(echo "$gettec_delay_jitter" | awk '{print $1}')
+		gettec_jitter=$(echo "$gettec_delay_jitter" | awk '{print $2}')
+		# Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+		last_line_delay=$(tail -n 1 Gettec_delay.txt)
+		echo "Retardos medidos hasta ahora para Gettec:"
+		echo $last_line_delay
+		last_line_jitter=$(tail -n 1 Gettec_jitter.txt)
+		echo "Jitters medidos hasta ahora para Gettec:"
+		echo $last_line_jitter
+		# A la última línea le concatenamos el valor de la nueva medida, en otra columna
+		sed -i '$s/.*/'"$last_line_delay"" $gettec_delay"'/' "Gettec_delay.txt"
+		sed -i '$s/.*/'"$last_line_jitter"" $gettec_jitter"'/' "Gettec_jitter.txt"
+		echo "Esperamos 5s"
+		sleep 5
+	fi
+	
+	# Operación si el nombre del servidor coincide con "aipg-tx.org"
+	if [ "$servidor" = "aipg-tx.org" ]; then
+		echo "Servidor aipg"
+		aipg_delay_jitter=$(ping -c 10 "$IP_aipg" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+		aipg_delay=$(echo "$aipg_delay_jitter" | awk '{print $1}')
+	        aipg_jitter=$(echo "$aipg_delay_jitter" | awk '{print $2}')
+		# Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+        	last_line_delay=$(tail -n 1 aipg_delay.txt)
+		echo "Retardos medidos hasta ahora para aipg:"
+	        echo $last_line_delay
+        	last_line_jitter=$(tail -n 1 aipg_jitter.txt)
+		echo "Jitters medidos hasta ahora para aipg:"
+	        echo $last_line_jitter
+        	# A la última línea le concatenamos el valor de la nueva medida, en otra columna
+        	sed -i '$s/.*/'"$last_line_delay"" $aipg_delay"'/' "aipg_delay.txt"
+	        sed -i '$s/.*/'"$last_line_jitter"" $aipg_jitter"'/' "aipg_jitter.txt"
+		echo "Esperamos 5s"
+		sleep 5
+	fi
+	
+	# Operación si el nombre del servidor coincide con "bmgs.com.au"
+	if [ "$servidor" = "bmgs.com.au" ]; then
+		echo "Servidor bmgs"
+		bmgs_delay_jitter=$(ping -c 10 "$IP_bmgs" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+                bmgs_delay=$(echo "$bmgs_delay_jitter" | awk '{print $1}')
+                bmgs_jitter=$(echo "$bmgs_delay_jitter" | awk '{print $2}')
+                # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+                last_line_delay=$(tail -n 1 Bmgs_delay.txt)
+		echo "Retardos medidos hasta ahora para Bmgs:"
+                echo $last_line_delay
+                last_line_jitter=$(tail -n 1 Bmgs_jitter.txt)
+		echo "Jitters medidos hasta ahora para Bmgs:"
+                echo $last_line_jitter
+                # A la última línea le concatenamos el valor de la nueva medida, en otra columna
+                sed -i '$s/.*/'"$last_line_delay"" $bmgs_delay"'/' "Bmgs_delay.txt"
+                sed -i '$s/.*/'"$last_line_jitter"" $bmgs_jitter"'/' "Bmgs_jitter.txt"
+                echo "Esperamos 5s"
+		sleep 5
+	fi
+
+done < Servidores_Aleatorizados
+
+# Una vez guardados todos los replicates para cada servidor, almacenamos el contenido de los ficheros Gettec_delay
+# aipg_delay y Bmgs_delay en un fichero llamado Delay.csv que guarda todos los delays para todas las configuraciones.
+last_line=$(tail -n 1 Gettec_delay.txt)
+echo "$last_line" >> Delay.csv
+last_line=$(tail -n 1 aipg_delay.txt)
+echo "$last_line" >> Delay.csv
+last_line=$(tail -n 1 Bmgs_delay.txt)
+echo "$last_line" >> Delay.csv
+
+# Hacemos lo mismo para el jitter
+last_line=$(tail -n 1 Gettec_jitter.txt)
+echo "$last_line" >> Jitter.csv
+last_line=$(tail -n 1 aipg_jitter.txt)
+echo "$last_line" >> Jitter.csv
+last_line=$(tail -n 1 Bmgs_jitter.txt)
+echo "$last_line" >> Jitter.csv
+
+# Eliminamos ficheros de ayuda creados para no interferir cuando nos conectemos a otra VPN
+rm Gettec_delay.txt
+rm aipg_delay.txt
+rm Bmgs_delay.txt
+rm Gettec_jitter.txt
+rm aipg_jitter.txt
+rm Bmgs_jitter.txt
+
+# MEDIDA DEL THROUGHPUT
+
+# Medida del throughput (todos los valores en MB/s)
+# Para la medida del Throughput se utiliza la funcionalidad de comandos yt-dlp.
+# Se ha escogido el formato que contiene audio y video, no los dos por separado. Esto se ha conseguido
+# con el filtrado de formatos: "best*[vcoded!=none][acodec!=none]". EL resultado de yt-dlp ofrece 
+# la velocidad a la que se ha descargado el archivo. Para quedarnos únicamente con el valor de la métrica 
+# ejecutamos tail -n 1 para seleccionar la última línea, awk para quedarnos con el último valor y sed para 
+# sustituir MiB/s por nada.
+thput=$(yt-dlp -f 'best*[vcodec!=none][acodec!=none]' $URL | tail -n 1 | awk '{print $NF}' | sed 's/MiB\/s/E+06/')
+echo $thput >> Thput.csv
+rm 'Daler Mehndi - Tunak Tunak Tun (Earrape) [UEy5IuIrDfg].mp4'
+for i in $(seq 2 20); do
+        thput=$(yt-dlp -f 'best*[vcodec!=none][acodec!=none]' $URL | tail -n 1 | awk '{print $NF}' | sed 's/MiB\/s/E+06/')
+        # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+        last_line_thput=$(tail -n 1 Thput.csv)
+        echo $last_line_thput
+        # A la última línea le concatenamos la nueva medida del thput
+        sed -i '$s/.*/'"$last_line_thput"" $thput"'/' "Thput.csv"
+        rm 'Daler Mehndi - Tunak Tunak Tun (Earrape) [UEy5IuIrDfg].mp4'
+done
+
+############################################################################################
+############################### MEDICIÓN CON VPN USA DENVER ################################
+expressvpn connect usde
+# Esperamos 5 minutos a que se estabilice la conexión con la VPN
+sleep 60
+
+touch Gettec_delay.txt
+touch aipg_delay.txt
+touch Bmgs_delay.txt
+touch Gettec_jitter.txt
+touch aipg_jitter.txt
+touch Bmgs_jitter.txt
+ 
+# INtroducimos en el fichero Factores.csv la configuración de factores:
+echo "gettec.es" "EEUU-Denver" $dia $hora >> Factores.csv
+echo "aipg-tx.org" "EEUU-Denver" $dia $hora >> Factores.csv
+echo "bmgs.com.au" "EEUU-Denver" $dia $hora >> Factores.csv
+
+# Enviamos el primer ping al servidor gettec
+gettec_delay_jitter=$(ping -c 10 "$IP_gettec" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+gettec_delay=$(echo "$gettec_delay_jitter" | awk '{print $1}')
+gettec_jitter=$(echo "$gettec_delay_jitter" | awk '{print $2}')
+echo $gettec_delay >> Gettec_delay.txt
+echo $gettec_jitter >> Gettec_jitter.txt
+# Depuración código
+echo "Primer retardo Gettec: $gettec_delay"
+echo "Primer jitter Gettec: $gettec_jitter"
+
+
+
+# Enviamos el primer ping al servidor aipg
+aipg_delay_jitter=$(ping -c 10 "$IP_aipg" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+aipg_delay=$(echo "$aipg_delay_jitter" | awk '{print $1}')
+aipg_jitter=$(echo "$aipg_delay_jitter" | awk '{print $2}')
+echo $aipg_delay >> aipg_delay.txt
+echo $aipg_jitter >> aipg_jitter.txt
+# Depuración código
+echo "Primer retardo aipg: $aipg_delay"
+echo "Primer jitter aipg: $aipg_jitter"
+
+
+
+# Enviamos el primer ping al servidor bmgs
+bmgs_delay_jitter=$(ping -c 10 "$IP_bmgs" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+bmgs_delay=$(echo "$bmgs_delay_jitter" | awk '{print $1}')
+bmgs_jitter=$(echo "$bmgs_delay_jitter" | awk '{print $2}')
+echo $bmgs_delay >> Bmgs_delay.txt
+echo $bmgs_jitter >> Bmgs_jitter.txt
+# Depuración código
+echo "Primer retardo Bmgs: $bmgs_delay"
+echo "Primer jitter Bmgs: $bmgs_jitter"
+
+
+# Como ya hemos realizado una medida de ping para cada servidor, solo nos quedan 57
+# Bucle para leer el fichero "Servidores_ALeatorizados" línea por línea
+
+# || [n "$servidor" ] se pone para que se interprete la última línea aunque esta no tenga salto de línea
+contador=0
+while IFS= read -r servidor || [ -n "$servidor" ]; do
+	contador=$((contador + 1))
+	echo "Iteración $contador"
+	# Operación si el nombre del servidor coincide con "gettec.es"
+	if [ "$servidor" = "gettec.es" ]; then
+		echo "Servidor Gettec"
+		gettec_delay_jitter=$(ping -c 10 "$IP_gettec" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+		gettec_delay=$(echo "$gettec_delay_jitter" | awk '{print $1}')
+		gettec_jitter=$(echo "$gettec_delay_jitter" | awk '{print $2}')
+		# Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+		last_line_delay=$(tail -n 1 Gettec_delay.txt)
+		echo "Retardos medidos hasta ahora para Gettec:"
+		echo $last_line_delay
+		last_line_jitter=$(tail -n 1 Gettec_jitter.txt)
+		echo "Jitters medidos hasta ahora para Gettec:"
+		echo $last_line_jitter
+		# A la última línea le concatenamos el valor de la nueva medida, en otra columna
+		sed -i '$s/.*/'"$last_line_delay"" $gettec_delay"'/' "Gettec_delay.txt"
+		sed -i '$s/.*/'"$last_line_jitter"" $gettec_jitter"'/' "Gettec_jitter.txt"
+		echo "Esperamos 5s"
+		sleep 5
+	fi
+	
+	# Operación si el nombre del servidor coincide con "aipg-tx.org"
+	if [ "$servidor" = "aipg-tx.org" ]; then
+		echo "Servidor Aipg"
+		aipg_delay_jitter=$(ping -c 10 "$IP_aipg" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+		aipg_delay=$(echo "$aipg_delay_jitter" | awk '{print $1}')
+	        aipg_jitter=$(echo "$aipg_delay_jitter" | awk '{print $2}')
+		# Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+        	last_line_delay=$(tail -n 1 aipg_delay.txt)
+		echo "Retardos medidos hasta ahora para aipg:"
+	        echo $last_line_delay
+        	last_line_jitter=$(tail -n 1 aipg_jitter.txt)
+		echo "Jitters medidos hasta ahora para aipg:"
+	        echo $last_line_jitter
+        	# A la última línea le concatenamos el valor de la nueva medida, en otra columna
+        	sed -i '$s/.*/'"$last_line_delay"" $aipg_delay"'/' "aipg_delay.txt"
+	        sed -i '$s/.*/'"$last_line_jitter"" $aipg_jitter"'/' "aipg_jitter.txt"
+		echo "Esperamos 5s"
+		sleep 5
+	fi
+	
+	# Operación si el nombre del servidor coincide con "bmgs.com.au"
+	if [ "$servidor" = "bmgs.com.au" ]; then
+		echo "Servidor bmgs"
+		bmgs_delay_jitter=$(ping -c 10 "$IP_bmgs" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+                bmgs_delay=$(echo "$bmgs_delay_jitter" | awk '{print $1}')
+                bmgs_jitter=$(echo "$bmgs_delay_jitter" | awk '{print $2}')
+                # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+                last_line_delay=$(tail -n 1 Bmgs_delay.txt)
+		echo "Retardos medidos hasta ahora para Bmgs:"
+                echo $last_line_delay
+                last_line_jitter=$(tail -n 1 Bmgs_jitter.txt)
+		echo "Jitters medidos hasta ahora para Bmgs:"
+                echo $last_line_jitter
+                # A la última línea le concatenamos el valor de la nueva medida, en otra columna
+                sed -i '$s/.*/'"$last_line_delay"" $bmgs_delay"'/' "Bmgs_delay.txt"
+                sed -i '$s/.*/'"$last_line_jitter"" $bmgs_jitter"'/' "Bmgs_jitter.txt"
+                echo "Esperamos 5s"
+		sleep 5
+	fi
+
+done < Servidores_Aleatorizados
+
+# Una vez guardados todos los replicates para cada servidor, almacenamos el contenido de los ficheros Gettec_delay
+# aipg_delay y Bmgs_delay en un fichero llamado Delay.txt que guarda todos los delays para todas las configuraciones.
+last_line=$(tail -n 1 Gettec_delay.txt)
+echo "$last_line" >> Delay.csv
+last_line=$(tail -n 1 aipg_delay.txt)
+echo "$last_line" >> Delay.csv
+last_line=$(tail -n 1 Bmgs_delay.txt)
+echo "$last_line" >> Delay.csv
+
+# Hacemos lo mismo para el jitter
+last_line=$(tail -n 1 Gettec_jitter.txt)
+echo "$last_line" >> Jitter.csv
+last_line=$(tail -n 1 aipg_jitter.txt)
+echo "$last_line" >> Jitter.csv
+last_line=$(tail -n 1 Bmgs_jitter.txt)
+echo "$last_line" >> Jitter.csv
+
+# Eliminamos ficheros de ayuda creados para no interferir cuando nos conectemos a otra VPN
+rm Gettec_delay.txt
+rm aipg_delay.txt
+rm Bmgs_delay.txt
+rm Gettec_jitter.txt
+rm aipg_jitter.txt
+rm Bmgs_jitter.txt
+
+# MEDIDA DEL THROUGHPUT
+
+# Medida del throughput (todos los valores en MB/s)
+# Para la medida del Throughput se utiliza la funcionalidad de comandos yt-dlp.
+# Se ha escogido el formato que contiene audio y video, no los dos por separado. Esto se ha conseguido
+# con el filtrado de formatos: "best*[vcoded!=none][acodec!=none]". EL resultado de yt-dlp ofrece 
+# la velocidad a la que se ha descargado el archivo. Para quedarnos únicamente con el valor de la métrica 
+# ejecutamos tail -n 1 para seleccionar la última línea, awk para quedarnos con el último valor y sed para 
+# sustituir MiB/s por nada.
+thput=$(yt-dlp -f 'best*[vcodec!=none][acodec!=none]' $URL | tail -n 1 | awk '{print $NF}' | sed 's/MiB\/s/E+06/')
+echo $thput >> Thput.csv
+rm 'Daler Mehndi - Tunak Tunak Tun (Earrape) [UEy5IuIrDfg].mp4'
+for i in $(seq 2 20); do
+        thput=$(yt-dlp -f 'best*[vcodec!=none][acodec!=none]' $URL | tail -n 1 | awk '{print $NF}' | sed 's/MiB\/s/E+06/')
+        # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+        last_line_thput=$(tail -n 1 Thput.csv)
+        echo $last_line_thput
+        # A la última línea le concatenamos la nueva medida del thput
+        sed -i '$s/.*/'"$last_line_thput"" $thput"'/' "Thput.csv"
+        rm 'Daler Mehndi - Tunak Tunak Tun (Earrape) [UEy5IuIrDfg].mp4'
+done
+
+
+############################################################################################
+############################ MEDICIÓN CON VPN AUSTRALIA SYDNEY # ###########################
+expressvpn disconnect
+expressvpn connect ausy
+sleep 60
+
+touch Gettec_delay.txt
+touch aipg_delay.txt
+touch Bmgs_delay.txt
+touch Gettec_jitter.txt
+touch aipg_jitter.txt
+touch Bmgs_jitter.txt
+ 
+# INtroducimos en el fichero Factores.csv la configuración de factores:
+echo "gettec.es" "Australia-Sydney" $dia $hora >> Factores.csv
+echo "aipg-tx.org" "Australia-Sydney" $dia $hora >> Factores.csv
+echo "bmgs.com.au" "Australia-Sydney" $dia $hora >> Factores.csv
+
+# Enviamos el primer ping al servidor gettec
+gettec_delay_jitter=$(ping -c 10 "$IP_gettec" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+gettec_delay=$(echo "$gettec_delay_jitter" | awk '{print $1}')
+gettec_jitter=$(echo "$gettec_delay_jitter" | awk '{print $2}')
+echo $gettec_delay >> Gettec_delay.txt
+echo $gettec_jitter >> Gettec_jitter.txt
+
+# Enviamos el primer ping al servidor aipg
+aipg_delay_jitter=$(ping -c 10 "$IP_aipg" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+aipg_delay=$(echo "$aipg_delay_jitter" | awk '{print $1}')
+aipg_jitter=$(echo "$aipg_delay_jitter" | awk '{print $2}')
+echo $aipg_delay >> aipg_delay.txt
+echo $aipg_jitter >> aipg_jitter.txt
+
+# Enviamos el primer ping al servidor bmgs
+bmgs_delay_jitter=$(ping -c 10 "$IP_bmgs" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+bmgs_delay=$(echo "$bmgs_delay_jitter" | awk '{print $1}')
+bmgs_jitter=$(echo "$bmgs_delay_jitter" | awk '{print $2}')
+echo $bmgs_delay >> Bmgs_delay.txt
+echo $bmgs_jitter >> Bmgs_jitter.txt
+
+# Como ya hemos realizado una medida de ping para cada servidor, solo nos quedan 57
+# Bucle para leer el fichero "Servidores_ALeatorizados" línea por línea
+
+# || [n "$servidor" ] se pone para que se interprete la última línea aunque esta no tenga salto de línea
+
+contador=0
+while IFS= read -r servidor || [ -n "$servidor" ]; do
+	contador=$((contador + 1))
+	echo "Iteración $contador"
+        # Operación si el nombre del servidor coincide con "gettec.es"
+        if [ "$servidor" = "gettec.es" ]; then
+		echo "Servidor Gettec"
+                gettec_delay_jitter=$(ping -c 10 "$IP_gettec" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+                gettec_delay=$(echo "$gettec_delay_jitter" | awk '{print $1}')
+                gettec_jitter=$(echo "$gettec_delay_jitter" | awk '{print $2}')
+                # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+                last_line_delay=$(tail -n 1 Gettec_delay.txt)
+		echo "Retardos medidos hasta ahora para Gettec:"
+                echo $last_line_delay
+                last_line_jitter=$(tail -n 1 Gettec_jitter.txt)
+                echo "Jitters medidos hasta ahora para Gettec:"
+                echo $last_line_jitter
+                # A la última línea le concatenamos el valor de la nueva medida, en otra columna
+                sed -i '$s/.*/'"$last_line_delay"" $gettec_delay"'/' "Gettec_delay.txt"
+                sed -i '$s/.*/'"$last_line_jitter"" $gettec_jitter"'/' "Gettec_jitter.txt"
+                sleep 5
+        fi
+
+        # Operación si el nombre del servidor coincide con "aipg-tx.org"
+	if [ "$servidor" = "aipg-tx.org" ]; then
+		echo "Servidor aipg"
+		aipg_delay_jitter=$(ping -c 10 "$IP_aipg" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+		aipg_delay=$(echo "$aipg_delay_jitter" | awk '{print $1}')
+	        aipg_jitter=$(echo "$aipg_delay_jitter" | awk '{print $2}')
+		# Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+        	last_line_delay=$(tail -n 1 aipg_delay.txt)
+		echo "Retardos medidos hasta ahora para aipg:"
+	        echo $last_line_delay
+        	last_line_jitter=$(tail -n 1 aipg_jitter.txt)
+		echo "Jitters medidos hasta ahora para aipg:"
+	        echo $last_line_jitter
+        	# A la última línea le concatenamos el valor de la nueva medida, en otra columna
+        	sed -i '$s/.*/'"$last_line_delay"" $aipg_delay"'/' "aipg_delay.txt"
+	        sed -i '$s/.*/'"$last_line_jitter"" $aipg_jitter"'/' "aipg_jitter.txt"
+		echo "Esperamos 5s"
+		sleep 5
+	fi
+
+        # Operación si el nombre del servidor coincide con "bmgs.com.au"
+        if [ "$servidor" = "bmgs.com.au" ]; then
+		echo "Servidor Bmgs"
+                bmgs_delay_jitter=$(ping -c 10 "$IP_bmgs" | tail -n 1 | sed 's/\// /g' | awk '{print $8, $10}')
+                bmgs_delay=$(echo "$bmgs_delay_jitter" | awk '{print $1}')
+                bmgs_jitter=$(echo "$bmgs_delay_jitter" | awk '{print $2}')
+                # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+                last_line_delay=$(tail -n 1 Bmgs_delay.txt)
+		echo "Retardos medidos hasta ahora para Bmgs:"
+                echo $last_line_delay
+                last_line_jitter=$(tail -n 1 Bmgs_jitter.txt)
+		echo "Jitters medidos hasta ahora para Bmgs:"
+                echo $last_line_jitter
+                # A la última línea le concatenamos el valor de la nueva medida, en otra columna
+                sed -i '$s/.*/'"$last_line_delay"" $bmgs_delay"'/' "Bmgs_delay.txt"
+                sed -i '$s/.*/'"$last_line_jitter"" $bmgs_jitter"'/' "Bmgs_jitter.txt"
+		sleep 5
+        fi
+
+done < Servidores_Aleatorizados
+
+# Una vez guardados todos los replicates para cada servidor, almacenamos el contenido de los ficheros Gettec_delay
+# aipg_delay y Bmgs_delay en un fichero llamado Delay.txt que guarda todos los delays para todas las configuraciones.
+last_line=$(tail -n 1 Gettec_delay.txt)
+echo "$last_line" >> Delay.csv
+last_line=$(tail -n 1 aipg_delay.txt)
+echo "$last_line" >> Delay.csv
+last_line=$(tail -n 1 Bmgs_delay.txt)
+echo "$last_line" >> Delay.csv
+
+# Hacemos lo mismo para el jitter
+last_line=$(tail -n 1 Gettec_jitter.txt)
+echo "$last_line" >> Jitter.csv
+last_line=$(tail -n 1 aipg_jitter.txt)
+echo "$last_line" >> Jitter.csv
+last_line=$(tail -n 1 Bmgs_jitter.txt)
+echo "$last_line" >> Jitter.csv
+
+# Eliminamos ficheros de ayuda creados para no interferir cuando nos conectemos a otra VPN
+rm Gettec_delay.txt
+rm aipg_delay.txt
+rm Bmgs_delay.txt
+rm Gettec_jitter.txt
+rm aipg_jitter.txt
+rm Bmgs_jitter.txt
+
+# MEDIDA DEL THROUGHPUT
+
+# Medida del throughput (todos los valores en MB/s)
+# Para la medida del Throughput se utiliza la funcionalidad de comandos yt-dlp.
+# Se ha escogido el formato que contiene audio y video, no los dos por separado. Esto se ha conseguido
+# con el filtrado de formatos: "best*[vcoded!=none][acodec!=none]". EL resultado de yt-dlp ofrece 
+# la velocidad a la que se ha descargado el archivo. Para quedarnos únicamente con el valor de la métrica 
+# ejecutamos tail -n 1 para seleccionar la última línea, awk para quedarnos con el último valor y sed para 
+# sustituir MiB/s por nada.
+thput=$(yt-dlp -f 'best*[vcodec!=none][acodec!=none]' $URL | tail -n 1 | awk '{print $NF}' | sed 's/MiB\/s/E+06/' | sed 's/KiB\/s/E+03/')
+echo $thput >> Thput.csv
+rm 'Daler Mehndi - Tunak Tunak Tun (Earrape) [UEy5IuIrDfg].mp4'
+for i in $(seq 2 20); do
+        thput=$(yt-dlp -f 'best*[vcodec!=none][acodec!=none]' $URL | tail -n 1 | awk '{print $NF}' | sed 's/MiB\/s/E+06/' | sed 's/KiB\/s/E+03/')
+        # Guardamos el estado de la última línea de los ficheros Delay.csv y Jitter.csv
+        last_line_thput=$(tail -n 1 Thput.csv)
+        echo $last_line_thput
+        # A la última línea le concatenamos la nueva medida del thput
+        sed -i '$s/.*/'"$last_line_thput"" $thput"'/' "Thput.csv"
+        rm 'Daler Mehndi - Tunak Tunak Tun (Earrape) [UEy5IuIrDfg].mp4'
+done
